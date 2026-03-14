@@ -173,7 +173,7 @@ function MovieCard({ item, onClick, onToggleWatchlist, isWatchlisted, posterData
   )
 }
 
-function Modal({ item, onClose, onToggleWatchlist, isWatchlisted }) {
+function Modal({ item, onClose, onToggleWatchlist, isWatchlisted, onSelectPerson }) {
   const [detail, setDetail] = useState(null)
   const [loading, setLoading] = useState(true)
   const [posterData, setPosterData] = useState(null)
@@ -276,7 +276,12 @@ function Modal({ item, onClose, onToggleWatchlist, isWatchlisted }) {
               <div className="modal-section">
                 <h4 className="modal-section-title">Direction</h4>
                 <div className="modal-people">
-                  {directors.map(d => <span key={d.nconst} className="person-chip">{d.primary_name}</span>)}
+                  {directors.map(d => (
+                    <span key={d.nconst} className="person-chip person-chip-btn"
+                      onClick={() => onSelectPerson(d)} title={`Browse ${d.primary_name}'s films`}>
+                      {d.primary_name}
+                    </span>
+                  ))}
                 </div>
               </div>
             )}
@@ -289,7 +294,8 @@ function Modal({ item, onClose, onToggleWatchlist, isWatchlisted }) {
                     let charStr = ''
                     try { charStr = JSON.parse(a.characters || '[]').slice(0, 1).join(', ') } catch {}
                     return (
-                      <div key={a.nconst} className="actor-chip">
+                      <div key={a.nconst} className="actor-chip actor-chip-btn"
+                        onClick={() => onSelectPerson(a)} title={`Browse ${a.primary_name}'s films`}>
                         <span className="actor-name">{a.primary_name}</span>
                         {charStr && <span className="actor-char">as {charStr}</span>}
                       </div>
@@ -344,6 +350,27 @@ function Modal({ item, onClose, onToggleWatchlist, isWatchlisted }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function TitleSearchBar({ query, onChange, onClear }) {
+  const inputRef = useRef(null)
+  return (
+    <div className="title-search-bar">
+      <span className="title-search-icon">◎</span>
+      <input
+        ref={inputRef}
+        type="text"
+        className="title-search-input"
+        placeholder="Search for a title…"
+        value={query}
+        onChange={e => onChange(e.target.value)}
+        autoComplete="off"
+      />
+      {query && (
+        <button className="search-clear" onClick={() => { onClear(); inputRef.current?.focus() }} aria-label="Clear">✕</button>
+      )}
     </div>
   )
 }
@@ -471,6 +498,11 @@ export default function App() {
   const [runtimeBucket, setRuntimeBucket] = usePersistedState('filter_runtime', null)
   const [view, setView] = usePersistedState('filter_view', 'discover')
 
+  const [titleQuery, setTitleQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searchTotal, setSearchTotal] = useState(0)
+  const [searchLoading, setSearchLoading] = useState(false)
+
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
@@ -484,11 +516,34 @@ export default function App() {
   const [apiError, setApiError] = useState(false)
   const [dbEmpty, setDbEmpty] = useState(false)
 
+  // Debounced title search
+  useEffect(() => {
+    const q = titleQuery.trim()
+    if (!q) { setSearchResults([]); setSearchTotal(0); return }
+    const timer = setTimeout(async () => {
+      setSearchLoading(true)
+      try {
+        const r = await fetch(`${API}/search/titles?q=${encodeURIComponent(q)}&media_type=${mediaType}&page_size=48`)
+        const d = await r.json()
+        setSearchResults(d.results || [])
+        setSearchTotal(d.total || 0)
+      } catch {}
+      finally { setSearchLoading(false) }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [titleQuery, mediaType])
+
   const sentinelRef = useRef(null)
   const loadingRef = useRef(false)
 
   const { watchlist, toggle: toggleWatchlist, has: inWatchlist } = useWatchlist()
-  const posters = usePosterBatch(results)
+  const isSearching = titleQuery.trim().length > 0
+  const displayResults = isSearching
+    ? searchResults
+    : view === 'watchlist'
+      ? Object.values(watchlist).sort((a, b) => b.added_at - a.added_at)
+      : results
+  const posters = usePosterBatch(displayResults)
 
   // Load genres
   useEffect(() => {
@@ -599,10 +654,6 @@ export default function App() {
     prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g]
   )
 
-  const displayResults = view === 'watchlist'
-    ? Object.values(watchlist).sort((a, b) => b.added_at - a.added_at)
-    : results
-
   if (apiError) {
     return (
       <div className="error-state">
@@ -645,6 +696,13 @@ export default function App() {
             ))}
           </div>
         </div>
+
+        {/* Title search */}
+        <TitleSearchBar
+          query={titleQuery}
+          onChange={setTitleQuery}
+          onClear={() => setTitleQuery('')}
+        />
 
         {/* Person search */}
         <PersonSearch
@@ -743,15 +801,19 @@ export default function App() {
 
       <main className="main">
         <div className="results-header">
-          {view === 'watchlist'
-            ? <span className="results-count">{Object.keys(watchlist).length} saved title{Object.keys(watchlist).length !== 1 ? 's' : ''}</span>
-            : <span className="results-count">
-                {loading && !results.length ? 'Loading…' : `${total.toLocaleString()} title${total !== 1 ? 's' : ''}`}
-                {selectedGenres.length > 0 && ` · ${selectedGenres.join(', ')}`}
-                {selectedPerson && ` · ${selectedPerson.primary_name}`}
-                {decade && ` · ${decade}s`}
-                {runtimeBucket && ` · ${RUNTIME_BUCKETS[runtimeBucket].label}`}
+          {isSearching
+            ? <span className="results-count">
+                {searchLoading ? 'Searching…' : `${searchTotal.toLocaleString()} result${searchTotal !== 1 ? 's' : ''} for "${titleQuery.trim()}"`}
               </span>
+            : view === 'watchlist'
+              ? <span className="results-count">{Object.keys(watchlist).length} saved title{Object.keys(watchlist).length !== 1 ? 's' : ''}</span>
+              : <span className="results-count">
+                  {loading && !results.length ? 'Loading…' : `${total.toLocaleString()} title${total !== 1 ? 's' : ''}`}
+                  {selectedGenres.length > 0 && ` · ${selectedGenres.join(', ')}`}
+                  {selectedPerson && ` · ${selectedPerson.primary_name}`}
+                  {decade && ` · ${decade}s`}
+                  {runtimeBucket && ` · ${RUNTIME_BUCKETS[runtimeBucket].label}`}
+                </span>
           }
         </div>
 
@@ -776,8 +838,8 @@ export default function App() {
         )}
 
         {/* Infinite scroll sentinel */}
-        {view === 'discover' && <div ref={sentinelRef} className="scroll-sentinel" />}
-        {loading && results.length > 0 && <div className="loading-more">Loading more…</div>}
+        {!isSearching && view === 'discover' && <div ref={sentinelRef} className="scroll-sentinel" />}
+        {!isSearching && loading && results.length > 0 && <div className="loading-more">Loading more…</div>}
       </main>
 
       {selectedItem && (
@@ -786,6 +848,12 @@ export default function App() {
           onClose={() => setSelectedItem(null)}
           onToggleWatchlist={toggleWatchlist}
           isWatchlisted={inWatchlist(selectedItem.tconst)}
+          onSelectPerson={person => {
+            setSelectedItem(null)
+            setSelectedPerson(person)
+            setView('discover')
+            setTitleQuery('')
+          }}
         />
       )}
 

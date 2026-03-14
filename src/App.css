@@ -84,6 +84,45 @@
 .toggle-btn.active { background: var(--accent); color: #fff; }
 .view-btn.active { background: var(--card-h); color: var(--text); border: 1px solid var(--border); }
 
+/* Title search bar */
+.title-search-bar {
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 14px;
+  transition: border-color var(--transition);
+  max-width: 640px;
+}
+
+.title-search-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(230,57,70,0.15);
+}
+
+.title-search-icon {
+  color: var(--muted);
+  margin-right: 10px;
+  font-size: 15px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.title-search-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 300;
+  padding: 13px 0;
+  outline: none;
+}
+
+.title-search-input::placeholder { color: var(--dim); }
+
 /* Person search */
 .person-search { position: relative; max-width: 480px; }
 
@@ -555,6 +594,14 @@
 
 .actor-name { font-size: 13px; color: var(--text); }
 .actor-char { font-size: 11px; color: var(--muted); font-style: italic; }
+
+.person-chip-btn, .actor-chip-btn {
+  cursor: pointer;
+  transition: border-color var(--transition), color var(--transition);
+}
+.person-chip-btn:hover { border-color: var(--accent); color: var(--accent); }
+.actor-chip-btn:hover { border-color: var(--accent); }
+.actor-chip-btn:hover .actor-name { color: var(--accent); }
 
 .seasons-grid { display: flex; flex-wrap: wrap; gap: 8px; }
 
