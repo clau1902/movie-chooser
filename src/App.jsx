@@ -68,7 +68,20 @@ function useWatchlist() {
       return next
     })
   }, [])
-  return { watchlist, toggle, has: (id) => !!watchlist[id] }
+  const importItems = useCallback((items) => {
+    setWatchlist(prev => {
+      const next = { ...prev }
+      for (const item of items) {
+        if (item.tconst && !next[item.tconst]) {
+          next[item.tconst] = { ...item, added_at: item.added_at || Date.now() }
+        }
+      }
+      localStorage.setItem('watchlist', JSON.stringify(next))
+      return next
+    })
+  }, [])
+
+  return { watchlist, toggle, importItems, has: (id) => !!watchlist[id] }
 }
 
 // ─── Poster batch hook ────────────────────────────────────────────────────────
@@ -173,7 +186,7 @@ function MovieCard({ item, onClick, onToggleWatchlist, isWatchlisted, posterData
   )
 }
 
-function Modal({ item, onClose, onToggleWatchlist, isWatchlisted, onSelectPerson }) {
+function Modal({ item, onClose, onToggleWatchlist, isWatchlisted, onSelectPerson, onSelectItem }) {
   const [detail, setDetail] = useState(null)
   const [loading, setLoading] = useState(true)
   const [posterData, setPosterData] = useState(null)
@@ -337,7 +350,8 @@ function Modal({ item, onClose, onToggleWatchlist, isWatchlisted, onSelectPerson
                 <h4 className="modal-section-title">Similar Titles</h4>
                 <div className="similar-grid">
                   {detail.similar.map(s => (
-                    <div key={s.tconst} className="similar-item">
+                    <div key={s.tconst} className="similar-item similar-item-btn"
+                      onClick={() => onSelectItem(s)}>
                       <span className="similar-title">{s.primary_title}</span>
                       <span className="similar-meta">
                         {s.start_year}{s.average_rating && ` · ★ ${s.average_rating}`}
@@ -496,7 +510,7 @@ export default function App() {
   const [minRating, setMinRating] = usePersistedState('filter_minRating', 0)
   const [decade, setDecade] = usePersistedState('filter_decade', null)
   const [runtimeBucket, setRuntimeBucket] = usePersistedState('filter_runtime', null)
-  const [view, setView] = usePersistedState('filter_view', 'discover')
+  const [view, setView] = usePersistedState('filter_view', 'pick')
 
   const [titleQuery, setTitleQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
@@ -509,8 +523,16 @@ export default function App() {
   const [hasMore, setHasMore] = useState(true)
   const [total, setTotal] = useState(0)
 
+  const [copied, setCopied] = useState(false)
+  const copyLink = () => {
+    navigator.clipboard.writeText(window.location.href)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
+      .catch(() => {})
+  }
+
   const [selectedItem, setSelectedItem] = useState(null)
   const [surprise, setSurprise] = useState(null)
+  const [surprisePoster, setSurprisePoster] = useState(null)
   const [surpriseLoading, setSurpriseLoading] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [apiError, setApiError] = useState(false)
@@ -533,10 +555,69 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [titleQuery, mediaType])
 
+  // Read URL params once on mount — URL takes priority over localStorage
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search)
+    if (p.has('view'))    setView(p.get('view'))
+    if (p.has('type'))    setMediaType(p.get('type'))
+    if (p.has('genres'))  setSelectedGenres(p.get('genres').split(',').filter(Boolean))
+    if (p.has('sort'))    setSortBy(p.get('sort'))
+    if (p.has('rating'))  setMinRating(Number(p.get('rating')))
+    if (p.has('decade'))  setDecade(Number(p.get('decade')))
+    if (p.has('runtime')) setRuntimeBucket(p.get('runtime'))
+    if (p.has('person_id') && p.has('person_name'))
+      setSelectedPerson({ nconst: p.get('person_id'), primary_name: p.get('person_name') })
+    if (p.has('q'))       setTitleQuery(p.get('q'))
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync filter state → URL
+  useEffect(() => {
+    const p = new URLSearchParams()
+    if (view !== 'pick')          p.set('view', view)
+    if (mediaType !== 'all')      p.set('type', mediaType)
+    if (selectedGenres.length)    p.set('genres', selectedGenres.join(','))
+    if (sortBy !== 'votes')       p.set('sort', sortBy)
+    if (minRating > 0)            p.set('rating', minRating)
+    if (decade)                   p.set('decade', decade)
+    if (runtimeBucket)            p.set('runtime', runtimeBucket)
+    if (selectedPerson) {
+      p.set('person_id', selectedPerson.nconst)
+      p.set('person_name', selectedPerson.primary_name)
+    }
+    if (titleQuery.trim())        p.set('q', titleQuery.trim())
+    const qs = p.toString()
+    window.history.replaceState(null, '', qs ? `?${qs}` : window.location.pathname)
+  }, [view, mediaType, selectedGenres, sortBy, minRating, decade, runtimeBucket, selectedPerson, titleQuery])
+
   const sentinelRef = useRef(null)
   const loadingRef = useRef(false)
 
-  const { watchlist, toggle: toggleWatchlist, has: inWatchlist } = useWatchlist()
+  const { watchlist, toggle: toggleWatchlist, importItems: importWatchlist, has: inWatchlist } = useWatchlist()
+  const importRef = useRef(null)
+
+  const exportWatchlist = () => {
+    const data = JSON.stringify(Object.values(watchlist), null, 2)
+    const url = URL.createObjectURL(new Blob([data], { type: 'application/json' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'cinematch-watchlist.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleImportFile = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const items = JSON.parse(ev.target.result)
+        if (Array.isArray(items)) importWatchlist(items)
+      } catch {}
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
   const isSearching = titleQuery.trim().length > 0
   const displayResults = isSearching
     ? searchResults
@@ -629,6 +710,20 @@ export default function App() {
     return () => observer.disconnect()
   }, [view, hasMore, page, fetchResults])
 
+  // Fetch poster for surprise result
+  useEffect(() => {
+    if (!surprise) { setSurprisePoster(null); return }
+    const tmdbKey = localStorage.getItem('tmdb_key') || ''
+    fetch(`${API}/posters`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tconsts: [surprise.tconst], tmdb_key: tmdbKey }),
+    })
+      .then(r => r.json())
+      .then(d => setSurprisePoster(d.posters?.[surprise.tconst] || null))
+      .catch(() => {})
+  }, [surprise])
+
   const handleSurprise = async () => {
     setSurpriseLoading(true)
     setSurprise(null)
@@ -665,6 +760,9 @@ export default function App() {
     )
   }
 
+  const watchlistCount = Object.keys(watchlist).length
+  const isBrowsing = ['discover', 'top-rated', 'watchlist'].includes(view)
+
   return (
     <>
       <header className="header">
@@ -673,79 +771,81 @@ export default function App() {
           <span className="logo-match">MATCH</span>
         </div>
         <p className="tagline">Your self-hosted movie & series oracle</p>
+        <nav className="header-nav">
+          <button className={`header-nav-btn ${view === 'pick' ? 'active' : ''}`} onClick={() => setView('pick')}>Suggest</button>
+          <button className={`header-nav-btn ${view === 'discover' ? 'active' : ''}`} onClick={() => setView('discover')}>Discover</button>
+          <button className={`header-nav-btn ${view === 'top-rated' ? 'active' : ''}`} onClick={() => setView('top-rated')}>Top Rated</button>
+          <button className={`header-nav-btn ${view === 'watchlist' ? 'active' : ''}`} onClick={() => setView('watchlist')}>
+            Watchlist{watchlistCount > 0 ? ` (${watchlistCount})` : ''}
+          </button>
+        </nav>
         <button className="settings-icon-btn" onClick={() => setShowSettings(true)} title="Settings">⚙</button>
       </header>
 
-      <div className="controls">
-        {/* Row 1: media type + view */}
-        <div className="controls-row">
-          <div className="media-toggle">
-            {[['all', 'All'], ['movie', 'Movies'], ['series', 'Series']].map(([val, label]) => (
-              <button key={val} className={`toggle-btn ${mediaType === val ? 'active' : ''}`}
-                onClick={() => { setMediaType(val); setSelectedGenres([]) }}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="view-toggle">
-            {[['discover', 'Discover'], ['top-rated', 'Top Rated'], ['watchlist', `Watchlist (${Object.keys(watchlist).length})`]].map(([val, label]) => (
-              <button key={val} className={`view-btn ${view === val ? 'active' : ''}`}
-                onClick={() => setView(val)}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* ── PICK / SUGGEST VIEW ────────────────────────── */}
+      {view === 'pick' && (
+        <div className="pick-view">
+          <p className="pick-intro">What are you in the mood for?</p>
 
-        {/* Title search */}
-        <TitleSearchBar
-          query={titleQuery}
-          onChange={setTitleQuery}
-          onClear={() => setTitleQuery('')}
-        />
-
-        {/* Person search */}
-        <PersonSearch
-          onSelect={p => { setSelectedPerson(p); setView('discover') }}
-          selectedPerson={selectedPerson}
-          onClear={() => setSelectedPerson(null)}
-        />
-
-        {/* Genres */}
-        <div className="genres-section">
-          <div className="genres-label">Genres</div>
-          {dbEmpty ? (
+          {dbEmpty && (
             <div className="db-empty-notice">
               <span className="db-empty-icon">⚠</span>
               Backend not running — open a terminal and run:
               <code>cd backend && .venv/bin/uvicorn main:app --reload</code>
             </div>
-          ) : (
+          )}
+
+          <div className="pick-section">
+            <div className="pick-label">Type</div>
+            <div className="media-toggle">
+              {[['all', 'All'], ['movie', 'Movies'], ['series', 'Series']].map(([val, label]) => (
+                <button key={val} className={`toggle-btn ${mediaType === val ? 'active' : ''}`}
+                  onClick={() => { setMediaType(val); setSelectedGenres([]) }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pick-section">
+            <div className="pick-label">Genres <span className="pick-label-hint">pick any</span></div>
             <div className="genre-pills">
-              {genres.slice(0, 30).map(g => (
+              {genres.slice(0, 24).map(g => (
                 <button key={g.name} className={`genre-pill ${selectedGenres.includes(g.name) ? 'active' : ''}`}
                   style={{ '--gc': genreColor(g.name) }} onClick={() => toggleGenre(g.name)}>
                   {g.name}
                 </button>
               ))}
             </div>
-          )}
-        </div>
+          </div>
 
-        {/* Sort + rating + decade + runtime */}
-        {view !== 'watchlist' && (
-          <div className="filter-rows">
-            <div className="filter-row">
-              <span className="sort-label">Sort</span>
+          <div className="pick-section">
+            <div className="pick-label">Era</div>
+            <div className="sort-options decade-options">
+              {DECADES.map(d => (
+                <button key={d ?? 'all'} className={`sort-btn ${decade === d ? 'active' : ''}`}
+                  onClick={() => setDecade(d)}>
+                  {d ? `${d}s` : 'Any'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pick-row">
+            <div className="pick-section" style={{ flex: 1 }}>
+              <div className="pick-label">Runtime</div>
               <div className="sort-options">
-                {[['votes', 'Popular'], ['rating', 'Rating'], ['year_desc', 'Newest'], ['year_asc', 'Oldest']].map(([val, label]) => (
-                  <button key={val} className={`sort-btn ${sortBy === val ? 'active' : ''}`}
-                    onClick={() => setSortBy(val)}>{label}</button>
+                <button className={`sort-btn ${runtimeBucket === null ? 'active' : ''}`} onClick={() => setRuntimeBucket(null)}>Any</button>
+                {Object.entries(RUNTIME_BUCKETS).map(([key, b]) => (
+                  <button key={key} className={`sort-btn ${runtimeBucket === key ? 'active' : ''}`}
+                    onClick={() => setRuntimeBucket(key)}>{b.label}</button>
                 ))}
               </div>
-              <span className="sort-label">Rating</span>
+            </div>
+            <div className="pick-section" style={{ flex: 1 }}>
+              <div className="pick-label">Min Rating</div>
               <div className="sort-options">
-                {[0, 5, 6, 7, 7.5, 8].map(r => (
+                {[0, 6, 7, 7.5, 8].map(r => (
                   <button key={r} className={`sort-btn ${minRating === r ? 'active' : ''}`}
                     onClick={() => setMinRating(r)}>
                     {r === 0 ? 'Any' : `★ ${r}+`}
@@ -753,94 +853,188 @@ export default function App() {
                 ))}
               </div>
             </div>
+          </div>
 
-            <div className="filter-row">
-              <span className="sort-label">Decade</span>
-              <div className="sort-options decade-options">
-                {DECADES.map(d => (
-                  <button key={d ?? 'all'} className={`sort-btn ${decade === d ? 'active' : ''}`}
-                    onClick={() => setDecade(d)}>
-                    {d ? `${d}s` : 'Any'}
-                  </button>
-                ))}
+          <button className={`pick-suggest-btn ${surpriseLoading ? 'loading' : ''}`}
+            onClick={handleSurprise} disabled={surpriseLoading}>
+            {surpriseLoading ? 'Finding something…' : surprise ? '↺ Try another' : 'Suggest a title'}
+          </button>
+
+          {surprise && (
+            <div className="pick-result">
+              <div className="pick-result-poster">
+                <Poster item={surprise} posterData={surprisePoster} large />
               </div>
-              <span className="sort-label">Runtime</span>
-              <div className="sort-options">
-                <button className={`sort-btn ${runtimeBucket === null ? 'active' : ''}`}
-                  onClick={() => setRuntimeBucket(null)}>Any</button>
-                {Object.entries(RUNTIME_BUCKETS).map(([key, b]) => (
-                  <button key={key} className={`sort-btn ${runtimeBucket === key ? 'active' : ''}`}
-                    onClick={() => setRuntimeBucket(key)}>{b.label}</button>
-                ))}
+              <div className="pick-result-info">
+                <div className="pick-result-type">{surprise.title_type?.startsWith('tv') ? 'SERIES' : 'FILM'}</div>
+                <h2 className="pick-result-title">{surprise.primary_title}</h2>
+                {surprise.original_title && surprise.original_title !== surprise.primary_title && (
+                  <p className="pick-result-original">{surprise.original_title}</p>
+                )}
+                <div className="pick-result-meta">
+                  {surprise.start_year && <span>{surprise.start_year}</span>}
+                  {surprise.runtime_minutes && <span>{Math.floor(surprise.runtime_minutes / 60)}h {surprise.runtime_minutes % 60}m</span>}
+                  {surprise.average_rating && (
+                    <span><span className="gold">★</span> {surprise.average_rating.toFixed(1)}
+                      {surprise.num_votes && <small> ({surprise.num_votes.toLocaleString()} votes)</small>}
+                    </span>
+                  )}
+                </div>
+                {surprise.genres && (
+                  <div className="pick-result-genres">
+                    {surprise.genres.split(',').slice(0, 3).map(g => <GenreBadge key={g} genre={g.trim()} />)}
+                  </div>
+                )}
+                {surprisePoster?.overview && (
+                  <p className="pick-result-overview">{surprisePoster.overview}</p>
+                )}
+                <div className="pick-result-actions">
+                  <button className="pick-detail-btn" onClick={() => setSelectedItem(surprise)}>View Details</button>
+                  <button className="pick-browse-btn" onClick={() => setView('discover')}>Browse all matches →</button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
-
-        {/* Surprise me */}
-        <button className={`surprise-btn ${surpriseLoading ? 'loading' : ''}`}
-          onClick={handleSurprise} disabled={surpriseLoading}>
-          {surpriseLoading ? '⏳ Picking…' : '🎲 Surprise Me'}
-        </button>
-      </div>
-
-      {surprise && (
-        <div className="surprise-result">
-          <div className="surprise-label">Your pick tonight</div>
-          <button className="surprise-close" onClick={() => setSurprise(null)}>✕</button>
-          <div className="surprise-card" onClick={() => { setSelectedItem(surprise); setSurprise(null) }}>
-            <div className="surprise-title">{surprise.primary_title}</div>
-            <div className="surprise-meta">
-              {surprise.start_year} · {surprise.genres?.split(',').slice(0, 2).join(', ')}
-              {surprise.average_rating && ` · ★ ${surprise.average_rating.toFixed(1)}`}
-            </div>
-            <span className="surprise-cta">View Details →</span>
-          </div>
+          )}
         </div>
       )}
 
-      <main className="main">
-        <div className="results-header">
-          {isSearching
-            ? <span className="results-count">
-                {searchLoading ? 'Searching…' : `${searchTotal.toLocaleString()} result${searchTotal !== 1 ? 's' : ''} for "${titleQuery.trim()}"`}
-              </span>
-            : view === 'watchlist'
-              ? <span className="results-count">{Object.keys(watchlist).length} saved title{Object.keys(watchlist).length !== 1 ? 's' : ''}</span>
-              : <span className="results-count">
-                  {loading && !results.length ? 'Loading…' : `${total.toLocaleString()} title${total !== 1 ? 's' : ''}`}
-                  {selectedGenres.length > 0 && ` · ${selectedGenres.join(', ')}`}
-                  {selectedPerson && ` · ${selectedPerson.primary_name}`}
-                  {decade && ` · ${decade}s`}
-                  {runtimeBucket && ` · ${RUNTIME_BUCKETS[runtimeBucket].label}`}
-                </span>
-          }
-        </div>
+      {/* ── BROWSE VIEWS ───────────────────────────────── */}
+      {isBrowsing && (
+        <>
+          <div className="controls">
+            <div className="controls-row">
+              <div className="media-toggle">
+                {[['all', 'All'], ['movie', 'Movies'], ['series', 'Series']].map(([val, label]) => (
+                  <button key={val} className={`toggle-btn ${mediaType === val ? 'active' : ''}`}
+                    onClick={() => { setMediaType(val); setSelectedGenres([]) }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        <div className="grid">
-          {displayResults.map(item => (
-            <MovieCard
-              key={item.tconst}
-              item={item}
-              onClick={setSelectedItem}
-              onToggleWatchlist={toggleWatchlist}
-              isWatchlisted={inWatchlist(item.tconst)}
-              posterData={posters[item.tconst]}
-            />
-          ))}
-        </div>
-
-        {!loading && displayResults.length === 0 && (
-          <div className="empty-state">
-            <div className="empty-icon">{view === 'watchlist' ? '🔖' : '🎬'}</div>
-            <p>{view === 'watchlist' ? 'Your watchlist is empty. Heart some titles!' : 'No results found. Try different filters.'}</p>
+            {view !== 'watchlist' && (
+              <>
+                <TitleSearchBar query={titleQuery} onChange={setTitleQuery} onClear={() => setTitleQuery('')} />
+                <PersonSearch
+                  onSelect={p => { setSelectedPerson(p); setView('discover') }}
+                  selectedPerson={selectedPerson}
+                  onClear={() => setSelectedPerson(null)}
+                />
+                <div className="genres-section">
+                  <div className="genres-label">Genres</div>
+                  <div className="genre-pills">
+                    {genres.slice(0, 30).map(g => (
+                      <button key={g.name} className={`genre-pill ${selectedGenres.includes(g.name) ? 'active' : ''}`}
+                        style={{ '--gc': genreColor(g.name) }} onClick={() => toggleGenre(g.name)}>
+                        {g.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {view === 'discover' && (
+                  <div className="filter-rows">
+                    <div className="filter-row">
+                      <span className="sort-label">Sort</span>
+                      <div className="sort-options">
+                        {[['votes', 'Popular'], ['rating', 'Rating'], ['year_desc', 'Newest'], ['year_asc', 'Oldest']].map(([val, label]) => (
+                          <button key={val} className={`sort-btn ${sortBy === val ? 'active' : ''}`}
+                            onClick={() => setSortBy(val)}>{label}</button>
+                        ))}
+                      </div>
+                      <span className="sort-label">Rating</span>
+                      <div className="sort-options">
+                        {[0, 5, 6, 7, 7.5, 8].map(r => (
+                          <button key={r} className={`sort-btn ${minRating === r ? 'active' : ''}`}
+                            onClick={() => setMinRating(r)}>
+                            {r === 0 ? 'Any' : `★ ${r}+`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="filter-row">
+                      <span className="sort-label">Decade</span>
+                      <div className="sort-options decade-options">
+                        {DECADES.map(d => (
+                          <button key={d ?? 'all'} className={`sort-btn ${decade === d ? 'active' : ''}`}
+                            onClick={() => setDecade(d)}>
+                            {d ? `${d}s` : 'Any'}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="sort-label">Runtime</span>
+                      <div className="sort-options">
+                        <button className={`sort-btn ${runtimeBucket === null ? 'active' : ''}`}
+                          onClick={() => setRuntimeBucket(null)}>Any</button>
+                        {Object.entries(RUNTIME_BUCKETS).map(([key, b]) => (
+                          <button key={key} className={`sort-btn ${runtimeBucket === key ? 'active' : ''}`}
+                            onClick={() => setRuntimeBucket(key)}>{b.label}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
-        )}
 
-        {/* Infinite scroll sentinel */}
-        {!isSearching && view === 'discover' && <div ref={sentinelRef} className="scroll-sentinel" />}
-        {!isSearching && loading && results.length > 0 && <div className="loading-more">Loading more…</div>}
-      </main>
+          <main className="main">
+            <div className="results-header" style={{ justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                {isSearching
+                  ? <span className="results-count">
+                      {searchLoading ? 'Searching…' : `${searchTotal.toLocaleString()} result${searchTotal !== 1 ? 's' : ''} for "${titleQuery.trim()}"`}
+                    </span>
+                  : view === 'watchlist'
+                    ? <>
+                        <span className="results-count">{watchlistCount} saved title{watchlistCount !== 1 ? 's' : ''}</span>
+                        <div className="watchlist-actions">
+                          <button className="wl-action-btn" onClick={exportWatchlist}>Export</button>
+                          <button className="wl-action-btn" onClick={() => importRef.current?.click()}>Import</button>
+                          <input ref={importRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleImportFile} />
+                        </div>
+                      </>
+                    : <span className="results-count">
+                        {loading && !results.length ? 'Loading…' : `${total.toLocaleString()} title${total !== 1 ? 's' : ''}`}
+                        {selectedGenres.length > 0 && ` · ${selectedGenres.join(', ')}`}
+                        {selectedPerson && ` · ${selectedPerson.primary_name}`}
+                        {decade && ` · ${decade}s`}
+                        {runtimeBucket && ` · ${RUNTIME_BUCKETS[runtimeBucket].label}`}
+                      </span>
+                }
+              </div>
+              {view !== 'watchlist' && !isSearching && (
+                <button className="copy-link-btn" onClick={copyLink}>
+                  {copied ? '✓ Copied' : '⤴ Share'}
+                </button>
+              )}
+            </div>
+
+            <div className="grid">
+              {displayResults.map(item => (
+                <MovieCard
+                  key={item.tconst}
+                  item={item}
+                  onClick={setSelectedItem}
+                  onToggleWatchlist={toggleWatchlist}
+                  isWatchlisted={inWatchlist(item.tconst)}
+                  posterData={posters[item.tconst]}
+                />
+              ))}
+            </div>
+
+            {!loading && displayResults.length === 0 && (
+              <div className="empty-state">
+                <div className="empty-icon">{view === 'watchlist' ? '🔖' : '🎬'}</div>
+                <p>{view === 'watchlist' ? 'Your watchlist is empty. Heart some titles!' : 'No results found. Try different filters.'}</p>
+              </div>
+            )}
+
+            {!isSearching && view === 'discover' && <div ref={sentinelRef} className="scroll-sentinel" />}
+            {!isSearching && loading && results.length > 0 && <div className="loading-more">Loading more…</div>}
+          </main>
+        </>
+      )}
 
       {selectedItem && (
         <Modal
@@ -854,6 +1048,7 @@ export default function App() {
             setView('discover')
             setTitleQuery('')
           }}
+          onSelectItem={setSelectedItem}
         />
       )}
 
