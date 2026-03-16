@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import './App.css'
 
-const API = 'http://localhost:8000'
+const API = '/api'
 const TMDB_IMG = 'https://image.tmdb.org/t/p/w342'
 const TMDB_IMG_LG = 'https://image.tmdb.org/t/p/w500'
 
