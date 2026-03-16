@@ -3,6 +3,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.backend
+    environment:
+      - DB_PATH=${DB_PATH:-/app/movies.db}
+      - TMDB_API_KEY=${TMDB_API_KEY:-}
     volumes:
       - ./backend/movies.db:/app/movies.db
     restart: unless-stopped
@@ -16,6 +19,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+      args:
+        - VITE_API_URL=${VITE_API_URL:-/api}
     ports:
       - "80:80"
     depends_on:

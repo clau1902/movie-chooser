@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import './App.css'
 
-const API = '/api'
+const API = import.meta.env.VITE_API_URL || '/api'
 const TMDB_IMG = 'https://image.tmdb.org/t/p/w342'
 const TMDB_IMG_LG = 'https://image.tmdb.org/t/p/w500'
 

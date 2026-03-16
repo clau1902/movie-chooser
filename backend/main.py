@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, List
 import math
+import os
 import sqlite3
 import time
 
@@ -15,7 +16,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-DB_PATH = Path(__file__).parent / "movies.db"
+DB_PATH = Path(os.environ.get("DB_PATH", Path(__file__).parent / "movies.db"))
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
 
 TITLE_TYPES = {
     "movie":  ["movie", "tvMovie", "video"],
@@ -499,14 +501,15 @@ async def get_posters(body: PostersRequest):
 
     missing = [t for t in tconsts if t not in cached]
 
-    if missing and body.tmdb_key:
+    key = body.tmdb_key or TMDB_API_KEY
+    if missing and key:
         db_w = get_write_db()
         async with httpx.AsyncClient(timeout=5) as client:
             for tconst in missing:
                 try:
                     resp = await client.get(
                         f"{TMDB_BASE}/find/{tconst}",
-                        params={"api_key": body.tmdb_key, "external_source": "imdb_id"},
+                        params={"api_key": key, "external_source": "imdb_id"},
                     )
                     if resp.status_code != 200:
                         continue
