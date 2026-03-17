@@ -1,8 +1,3 @@
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
-PRAGMA cache_size=-64000;
-PRAGMA temp_store=MEMORY;
-
 CREATE TABLE IF NOT EXISTS titles (
     tconst          TEXT PRIMARY KEY,
     title_type      TEXT NOT NULL,
@@ -11,14 +6,14 @@ CREATE TABLE IF NOT EXISTS titles (
     start_year      INTEGER,
     end_year        INTEGER,
     runtime_minutes INTEGER,
-    genres          TEXT
+    genres          TEXT,
+    search_vector   tsvector
 );
 
 CREATE TABLE IF NOT EXISTS ratings (
     tconst          TEXT PRIMARY KEY,
     average_rating  REAL NOT NULL,
-    num_votes       INTEGER NOT NULL,
-    FOREIGN KEY (tconst) REFERENCES titles(tconst)
+    num_votes       INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS people (
@@ -37,25 +32,20 @@ CREATE TABLE IF NOT EXISTS principals (
     category    TEXT,
     job         TEXT,
     characters  TEXT,
-    PRIMARY KEY (tconst, ordering),
-    FOREIGN KEY (tconst) REFERENCES titles(tconst),
-    FOREIGN KEY (nconst) REFERENCES people(nconst)
+    PRIMARY KEY (tconst, ordering)
 );
 
 CREATE TABLE IF NOT EXISTS crew (
     tconst      TEXT PRIMARY KEY,
     directors   TEXT,
-    writers     TEXT,
-    FOREIGN KEY (tconst) REFERENCES titles(tconst)
+    writers     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS episodes (
     tconst          TEXT PRIMARY KEY,
     parent_tconst   TEXT NOT NULL,
     season_number   INTEGER,
-    episode_number  INTEGER,
-    FOREIGN KEY (tconst) REFERENCES titles(tconst),
-    FOREIGN KEY (parent_tconst) REFERENCES titles(tconst)
+    episode_number  INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS akas (
@@ -67,8 +57,7 @@ CREATE TABLE IF NOT EXISTS akas (
     types       TEXT,
     attributes  TEXT,
     is_original INTEGER DEFAULT 0,
-    PRIMARY KEY (tconst, ordering),
-    FOREIGN KEY (tconst) REFERENCES titles(tconst)
+    PRIMARY KEY (tconst, ordering)
 );
 
 CREATE TABLE IF NOT EXISTS posters (
@@ -76,19 +65,10 @@ CREATE TABLE IF NOT EXISTS posters (
     poster_path   TEXT,
     overview      TEXT,
     tmdb_id       INTEGER,
-    fetched_at    INTEGER NOT NULL,
-    FOREIGN KEY (tconst) REFERENCES titles(tconst)
+    fetched_at    INTEGER NOT NULL
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS titles_fts USING fts5(
-    tconst        UNINDEXED,
-    primary_title,
-    original_title,
-    content='titles',
-    content_rowid='rowid'
-);
-
--- Indexes for fast queries
+-- Indexes
 CREATE INDEX IF NOT EXISTS idx_titles_type       ON titles(title_type);
 CREATE INDEX IF NOT EXISTS idx_titles_year       ON titles(start_year);
 CREATE INDEX IF NOT EXISTS idx_titles_genres     ON titles(genres);
@@ -96,6 +76,7 @@ CREATE INDEX IF NOT EXISTS idx_ratings_avg       ON ratings(average_rating DESC)
 CREATE INDEX IF NOT EXISTS idx_ratings_votes     ON ratings(num_votes DESC);
 CREATE INDEX IF NOT EXISTS idx_principals_nconst ON principals(nconst);
 CREATE INDEX IF NOT EXISTS idx_principals_tconst ON principals(tconst);
-CREATE INDEX IF NOT EXISTS idx_people_name       ON people(primary_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_people_name       ON people(lower(primary_name));
 CREATE INDEX IF NOT EXISTS idx_episodes_parent   ON episodes(parent_tconst);
 CREATE INDEX IF NOT EXISTS idx_akas_region       ON akas(region);
+CREATE INDEX IF NOT EXISTS idx_titles_fts        ON titles USING GIN(search_vector);

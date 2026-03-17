@@ -1,14 +1,30 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cinematch
+      POSTGRES_PASSWORD: cinematch
+      POSTGRES_DB: cinematch
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cinematch"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile.backend
     environment:
-      - DB_PATH=${DB_PATH:-/app/movies.db}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://cinematch:cinematch@db:5432/cinematch}
       - TMDB_API_KEY=${TMDB_API_KEY:-}
-    volumes:
-      - ./backend/movies.db:/app/movies.db
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 5s
@@ -27,3 +43,6 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  postgres_data:

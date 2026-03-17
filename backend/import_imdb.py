@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 IMDB Dataset Importer
-Downloads and imports all IMDB public datasets into SQLite.
+Downloads and imports all IMDB public datasets into PostgreSQL.
 
 Datasets used (all free, updated daily by IMDB):
   https://datasets.imdbws.com/
@@ -10,15 +10,16 @@ Datasets used (all free, updated daily by IMDB):
 import gzip
 import io
 import os
-import sqlite3
 import sys
 import time
 from pathlib import Path
 
+import psycopg2
+from psycopg2.extras import execute_values
 import requests
 from tqdm import tqdm
 
-DB_PATH = Path(__file__).parent / "movies.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://cinematch:cinematch@localhost:5432/cinematch")
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DATA_DIR = Path(__file__).parent / "imdb_data"
 
@@ -32,7 +33,6 @@ DATASETS = {
     "title.akas":       "https://datasets.imdbws.com/title.akas.tsv.gz",
 }
 
-# Only import these title types (skip shorts, video games, etc. unless --all)
 DEFAULT_TYPES = {
     "movie", "tvMovie", "tvSeries", "tvMiniSeries",
     "tvSpecial", "video", "short", "tvShort",
@@ -83,9 +83,13 @@ def iter_tsv(path):
 
 def create_schema(conn):
     print("Creating schema...")
+    cur = conn.cursor()
     with open(SCHEMA_PATH) as f:
-        conn.executescript(f.read())
+        sql = f.read()
+    for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+        cur.execute(stmt)
     conn.commit()
+    cur.close()
 
 
 def import_titles(conn, path, allowed_types):
@@ -105,8 +109,7 @@ def import_titles(conn, path, allowed_types):
             continue
 
         batch.append((
-            row["tconst"],
-            t,
+            row["tconst"], t,
             row["primaryTitle"],
             null(row.get("originalTitle")),
             null_int(row.get("startYear")),
@@ -117,18 +120,19 @@ def import_titles(conn, path, allowed_types):
         count += 1
 
         if len(batch) >= 50_000:
-            cur.executemany(
-                "INSERT OR IGNORE INTO titles VALUES (?,?,?,?,?,?,?,?)", batch
-            )
+            execute_values(cur,
+                "INSERT INTO titles (tconst, title_type, primary_title, original_title, start_year, end_year, runtime_minutes, genres) VALUES %s ON CONFLICT DO NOTHING",
+                batch)
             conn.commit()
             batch.clear()
 
     if batch:
-        cur.executemany(
-            "INSERT OR IGNORE INTO titles VALUES (?,?,?,?,?,?,?,?)", batch
-        )
+        execute_values(cur,
+            "INSERT INTO titles (tconst, title_type, primary_title, original_title, start_year, end_year, runtime_minutes, genres) VALUES %s ON CONFLICT DO NOTHING",
+            batch)
         conn.commit()
 
+    cur.close()
     print(f"  -> {count:,} titles imported, {skipped:,} skipped")
 
 
@@ -139,26 +143,23 @@ def import_ratings(conn, path):
     count = 0
 
     for row in tqdm(iter_tsv(path), desc="ratings"):
-        batch.append((
-            row["tconst"],
-            null_float(row["averageRating"]),
-            null_int(row["numVotes"]),
-        ))
+        batch.append((row["tconst"], null_float(row["averageRating"]), null_int(row["numVotes"])))
         count += 1
 
         if len(batch) >= 50_000:
-            cur.executemany(
-                "INSERT OR IGNORE INTO ratings VALUES (?,?,?)", batch
-            )
+            execute_values(cur,
+                "INSERT INTO ratings (tconst, average_rating, num_votes) VALUES %s ON CONFLICT DO NOTHING",
+                batch)
             conn.commit()
             batch.clear()
 
     if batch:
-        cur.executemany(
-            "INSERT OR IGNORE INTO ratings VALUES (?,?,?)", batch
-        )
+        execute_values(cur,
+            "INSERT INTO ratings (tconst, average_rating, num_votes) VALUES %s ON CONFLICT DO NOTHING",
+            batch)
         conn.commit()
 
+    cur.close()
     print(f"  -> {count:,} ratings imported")
 
 
@@ -170,35 +171,32 @@ def import_people(conn, path):
 
     for row in tqdm(iter_tsv(path), desc="people"):
         batch.append((
-            row["nconst"],
-            row["primaryName"],
-            null_int(row.get("birthYear")),
-            null_int(row.get("deathYear")),
-            null(row.get("primaryProfession")),
-            null(row.get("knownForTitles")),
+            row["nconst"], row["primaryName"],
+            null_int(row.get("birthYear")), null_int(row.get("deathYear")),
+            null(row.get("primaryProfession")), null(row.get("knownForTitles")),
         ))
         count += 1
 
         if len(batch) >= 50_000:
-            cur.executemany(
-                "INSERT OR IGNORE INTO people VALUES (?,?,?,?,?,?)", batch
-            )
+            execute_values(cur,
+                "INSERT INTO people (nconst, primary_name, birth_year, death_year, primary_profession, known_for_titles) VALUES %s ON CONFLICT DO NOTHING",
+                batch)
             conn.commit()
             batch.clear()
 
     if batch:
-        cur.executemany(
-            "INSERT OR IGNORE INTO people VALUES (?,?,?,?,?,?)", batch
-        )
+        execute_values(cur,
+            "INSERT INTO people (nconst, primary_name, birth_year, death_year, primary_profession, known_for_titles) VALUES %s ON CONFLICT DO NOTHING",
+            batch)
         conn.commit()
 
+    cur.close()
     print(f"  -> {count:,} people imported")
 
 
 def import_principals(conn, path):
     print("Importing principals (cast/crew)...")
     cur = conn.cursor()
-    # Only import cast-related roles to keep size manageable
     KEEP_CATEGORIES = {
         "actor", "actress", "self", "director", "writer",
         "producer", "composer", "cinematographer",
@@ -214,28 +212,25 @@ def import_principals(conn, path):
             continue
 
         batch.append((
-            row["tconst"],
-            null_int(row["ordering"]),
-            row["nconst"],
-            null(cat),
-            null(row.get("job")),
-            null(row.get("characters")),
+            row["tconst"], null_int(row["ordering"]), row["nconst"],
+            null(cat), null(row.get("job")), null(row.get("characters")),
         ))
         count += 1
 
         if len(batch) >= 50_000:
-            cur.executemany(
-                "INSERT OR IGNORE INTO principals VALUES (?,?,?,?,?,?)", batch
-            )
+            execute_values(cur,
+                "INSERT INTO principals (tconst, ordering, nconst, category, job, characters) VALUES %s ON CONFLICT DO NOTHING",
+                batch)
             conn.commit()
             batch.clear()
 
     if batch:
-        cur.executemany(
-            "INSERT OR IGNORE INTO principals VALUES (?,?,?,?,?,?)", batch
-        )
+        execute_values(cur,
+            "INSERT INTO principals (tconst, ordering, nconst, category, job, characters) VALUES %s ON CONFLICT DO NOTHING",
+            batch)
         conn.commit()
 
+    cur.close()
     print(f"  -> {count:,} principal entries imported, {skipped:,} skipped")
 
 
@@ -246,24 +241,23 @@ def import_crew(conn, path):
     count = 0
 
     for row in tqdm(iter_tsv(path), desc="crew"):
-        batch.append((
-            row["tconst"],
-            null(row.get("directors")),
-            null(row.get("writers")),
-        ))
+        batch.append((row["tconst"], null(row.get("directors")), null(row.get("writers"))))
         count += 1
 
         if len(batch) >= 50_000:
-            cur.executemany(
-                "INSERT OR IGNORE INTO crew VALUES (?,?,?)", batch
-            )
+            execute_values(cur,
+                "INSERT INTO crew (tconst, directors, writers) VALUES %s ON CONFLICT DO NOTHING",
+                batch)
             conn.commit()
             batch.clear()
 
     if batch:
-        cur.executemany("INSERT OR IGNORE INTO crew VALUES (?,?,?)", batch)
+        execute_values(cur,
+            "INSERT INTO crew (tconst, directors, writers) VALUES %s ON CONFLICT DO NOTHING",
+            batch)
         conn.commit()
 
+    cur.close()
     print(f"  -> {count:,} crew records imported")
 
 
@@ -275,24 +269,25 @@ def import_episodes(conn, path):
 
     for row in tqdm(iter_tsv(path), desc="episodes"):
         batch.append((
-            row["tconst"],
-            row["parentTconst"],
-            null_int(row.get("seasonNumber")),
-            null_int(row.get("episodeNumber")),
+            row["tconst"], row["parentTconst"],
+            null_int(row.get("seasonNumber")), null_int(row.get("episodeNumber")),
         ))
         count += 1
 
         if len(batch) >= 50_000:
-            cur.executemany(
-                "INSERT OR IGNORE INTO episodes VALUES (?,?,?,?)", batch
-            )
+            execute_values(cur,
+                "INSERT INTO episodes (tconst, parent_tconst, season_number, episode_number) VALUES %s ON CONFLICT DO NOTHING",
+                batch)
             conn.commit()
             batch.clear()
 
     if batch:
-        cur.executemany("INSERT OR IGNORE INTO episodes VALUES (?,?,?,?)", batch)
+        execute_values(cur,
+            "INSERT INTO episodes (tconst, parent_tconst, season_number, episode_number) VALUES %s ON CONFLICT DO NOTHING",
+            batch)
         conn.commit()
 
+    cur.close()
     print(f"  -> {count:,} episodes imported")
 
 
@@ -304,47 +299,59 @@ def import_akas(conn, path):
 
     for row in tqdm(iter_tsv(path), desc="akas"):
         batch.append((
-            row["titleId"],
-            null_int(row["ordering"]),
-            null(row.get("title")),
-            null(row.get("region")),
-            null(row.get("language")),
-            null(row.get("types")),
-            null(row.get("attributes")),
+            row["titleId"], null_int(row["ordering"]),
+            null(row.get("title")), null(row.get("region")), null(row.get("language")),
+            null(row.get("types")), null(row.get("attributes")),
             1 if row.get("isOriginalTitle") == "1" else 0,
         ))
         count += 1
 
         if len(batch) >= 50_000:
-            cur.executemany(
-                "INSERT OR IGNORE INTO akas VALUES (?,?,?,?,?,?,?,?)", batch
-            )
+            execute_values(cur,
+                "INSERT INTO akas (tconst, ordering, title, region, language, types, attributes, is_original) VALUES %s ON CONFLICT DO NOTHING",
+                batch)
             conn.commit()
             batch.clear()
 
     if batch:
-        cur.executemany(
-            "INSERT OR IGNORE INTO akas VALUES (?,?,?,?,?,?,?,?)", batch
-        )
+        execute_values(cur,
+            "INSERT INTO akas (tconst, ordering, title, region, language, types, attributes, is_original) VALUES %s ON CONFLICT DO NOTHING",
+            batch)
         conn.commit()
 
+    cur.close()
     print(f"  -> {count:,} aka entries imported")
 
 
+def build_fts_index(conn):
+    print("Building full-text search index (this may take a few minutes)...")
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE titles
+        SET search_vector = to_tsvector('english',
+            coalesce(primary_title, '') || ' ' || coalesce(original_title, ''))
+    """)
+    conn.commit()
+    cur.close()
+    print("  -> FTS index built")
+
+
 def print_stats(conn):
+    cur = conn.cursor()
     print("\n=== Database Statistics ===")
     for table in ["titles", "ratings", "people", "principals", "crew", "episodes", "akas"]:
-        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        print(f"  {table:20s}: {count:>10,}")
+        cur.execute(f"SELECT COUNT(*) FROM {table}")
+        print(f"  {table:20s}: {cur.fetchone()[0]:>10,}")
 
     print("\n  Title types breakdown:")
-    for row in conn.execute(
-        "SELECT title_type, COUNT(*) as n FROM titles GROUP BY title_type ORDER BY n DESC"
-    ):
+    cur.execute("SELECT title_type, COUNT(*) as n FROM titles GROUP BY title_type ORDER BY n DESC")
+    for row in cur.fetchall():
         print(f"    {row[0]:20s}: {row[1]:>8,}")
 
-    db_size = DB_PATH.stat().st_size / 1024 / 1024
-    print(f"\n  DB size: {db_size:.1f} MB")
+    cur.execute("SELECT pg_database_size(current_database())")
+    db_size = cur.fetchone()[0]
+    print(f"\n  DB size: {db_size / 1024 / 1024:.1f} MB")
+    cur.close()
 
 
 def main():
@@ -356,11 +363,10 @@ def main():
     print("=" * 60)
     print("  IMDB Dataset Importer")
     print("=" * 60)
-    print(f"  Database: {DB_PATH}")
+    print(f"  Database: {DATABASE_URL}")
     print(f"  Force re-download: {force}")
     print()
 
-    # Download all datasets first
     print("Step 1: Downloading datasets...")
     files = {}
     for name, url in DATASETS.items():
@@ -368,12 +374,7 @@ def main():
             continue
         files[name] = download(name, url, force=force)
 
-    # Open DB
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA cache_size=-128000")
-    conn.execute("PRAGMA temp_store=MEMORY")
+    conn = psycopg2.connect(DATABASE_URL)
 
     print("\nStep 2: Creating schema...")
     create_schema(conn)
@@ -390,24 +391,14 @@ def main():
     if "title.akas" in files:
         import_akas(conn, files["title.akas"])
 
-    # Build FTS5 full-text search index
-    fts_exists = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='titles_fts'"
-    ).fetchone()
-    if fts_exists:
-        print("Building FTS5 search index (this may take a few minutes)...")
-        conn.execute("INSERT INTO titles_fts(titles_fts) VALUES('rebuild')")
-        conn.commit()
-        print("  -> FTS5 index built")
-    else:
-        print("  [skip] FTS5 table not found in schema, skipping index build")
+    build_fts_index(conn)
 
     elapsed = time.time() - t0
     print(f"\nImport completed in {elapsed:.0f}s ({elapsed/60:.1f} min)")
 
     print_stats(conn)
     conn.close()
-    print("\nDone! Run the API with: uvicorn main:app --reload")
+    print("\nDone! Start the app with: docker compose up")
 
 
 if __name__ == "__main__":
